@@ -12,11 +12,13 @@
 #       - (original file if first commit)
 #       - commit_message
 #       - next_diff # stores differences from current to next (newer) (created by diff)
+# 			- prev_diff
 #       - next_hash # hash of next commit
 #
 #
 ##################################################################################
 
+# Restoring files copy previous version
 
 ###########################  Utilities  ##########################################
 hash_with_date() {
@@ -31,9 +33,13 @@ hash_filename() {
 	echo "$1" | sha256sum | cut -d ' ' -f 1
 }
 
+get_latest_directory() {
+	dir_path=$1
+	echo $(ls -td "$dir_path"/*/ | head -n 1)
+}
+
 ##################################################################################
 
-# Haven't considered the case where the file is the same as the previous commit
 if [ "$1" == "init" ]; then
 	if [ -d ".bku" ]; then
   	echo "Error: Backup already initialized in this folder."
@@ -48,6 +54,7 @@ if [ "$1" == "init" ]; then
 	touch .bku/tracked_files
 
 	mkdir .bku/commits
+	mkdir .bku/commit_id
 
   echo "Backup initialized."
 fi
@@ -57,12 +64,12 @@ add() {
 
 	if [ ! -d .bku ]; then
 		echo ".bku directory doesn't exist."
-    	exit 1
-  	fi
+		exit 1
+  fi
 
 	if [ -d "$filepath" ]; then
 		echo "$filepath is a directory".
-		exit 1 
+		exit 1
 	fi
 
 	if [ ! -f "$filepath" ]; then
@@ -87,6 +94,7 @@ add() {
 commit() {
 	message=$1
 	filepath=$2
+	id=$3
 
 	if [ ! -f "$filepath" ]; then
 		echo "Error: $filepath doesn't exist."
@@ -108,16 +116,20 @@ commit() {
 		exit 1
 	fi
 
-	current_hash_file=$(hash_file "$filepath")
+	current_hash_file=$(hash_with_date "$filepath")
 	current_hash_dir=.bku/commits/$current_hash_file
 	mkdir $current_hash_dir
 
-	diff ./.tmp/latest $filepath > $latest_hash_dir/next_diff
+	diff ./.tmp/latest $filepath > $latest_hash_dir/next_diff > /dev/null 2>&1
+	diff $filepath ./.tmp/latest > $current_hash_dir/prev_diff > /dev/null 2>&1
+	printf "$current_hash_file" > $latest_hash_dir/next_hash
 	echo "$message" > $current_hash_dir/commit_message
 
-	echo "$(date +"%H:%M-%d/%m/%Y"): $message ($filepath)." > .tmp/tmp_history
-	cat .bku/commit_history >> .tmp/tmp_history
-	cp .tmp/tmp_history .bku/commit_history
+	# echo "$(date +"%H:%M-%d/%m/%Y"): $message ($filepath)." > .tmp/tmp_history
+	# cat .bku/commit_history >> .tmp/tmp_history
+	# cp .tmp/tmp_history .bku/commit_history
+
+	echo "$filepath" >> ".bku/commit_id/$id"
 
 	rm -rf .tmp
 }
@@ -133,27 +145,51 @@ recreate() {
 
 	# create a .tmp directory and work in it for security
 
-	mkdir -p .tmp
 	rm -rf ./.tmp/*
+	mkdir -p .tmp
 
 	current_file=$current_hash_dir/original
 	cp $current_file .tmp/current_file
 	current_file=.tmp/current_file
 
 
-	while [[ -f $current_hash_dir/next_diff ]] ; do
-		patch $current_file $current_hash_dir/next_diff
+	while [[ -f $current_hash_dir/next_hash ]] ; do
+		patch $current_file $current_hash_dir/next_diff > /dev/null 2>&1
 
-		current_hash_file=$(hash_file "$current_file")
+		current_hash_file=$(cat "$current_hash_dir/next_hash")
 		current_hash_dir=.bku/commits/$current_hash_file
 	done
 
 	mv $current_file .tmp/latest
 
-	echo "$current_hash_dir"
-
+	printf "$current_hash_dir" # return hash dir
 	# now the latest is $current_file (# .tmp/latest)
 }
+
+restore() {
+	filepath=$1
+
+	rm -rf .tmp
+	current_hash_dir=$(recreate $filepath)
+
+	if [[ ! -e "$current_hash_dir/prev_diff" ]]; then
+		echo "Error: No previous version available for $filepath"
+		exit 1
+	fi
+
+	patch ".tmp/latest" "$current_hash_dir/prev_diff" > /dev/null 2>&1
+
+	cp .tmp/latest $filepath
+
+	printf "Restored $filepath to its previous version."
+}
+
+########################### Main ################################
+
+if [ ! -d ".bku" ]; then
+	echo ".bku directory doesn't exist!"
+	exit 1
+fi
 
 if [ "$1" == "add" ]; then
   filename=$2
@@ -175,14 +211,26 @@ fi
 if [ "$1" == "commit" ]; then
 	message=$2
   filename=$3
+	id=$(echo "$(date +%s)")
 
   if [ "$filename" == "" ]; then
     echo "Commit all files."
 		exit 0
   fi
 
-	commit $message $filename
+	commit $message $filename $id
 	exit 0
+fi
+
+if [ "$1" == "restore" ]; then
+	if [ "$2" == "" ]; then
+		echo "Restore latest commit."
+		restore_latest_commit
+		exit 0
+	fi
+
+	filepath=$2
+	restore $filepath
 fi
 
 if [ "$1" == "history" ]; then
