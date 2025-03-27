@@ -12,11 +12,26 @@
 #       - (original file if first commit)
 #       - commit_message
 #       - next_diff # stores differences from current to next (newer) (created by diff)
-#
+#       - next_hash # hash of next commit
 #
 #
 ##################################################################################
 
+
+###########################  Utilities  ##########################################
+hash_with_date() {
+	echo "$1$(date +%s)" | sha256sum | cut -d ' ' -f 1
+}
+
+hash_file() {
+	sha256sum $1 | cut -d ' ' -f 1
+}
+
+hash_filename() {
+	echo "$1" | sha256sum | cut -d ' ' -f 1
+}
+
+##################################################################################
 
 # Haven't considered the case where the file is the same as the previous commit
 if [ "$1" == "init" ]; then
@@ -60,10 +75,9 @@ add() {
 		exit 1
 	fi
 
-	echo "Adding $filepath."
-
 	printf "$filepath" >> .bku/tracked_files
-	hash_dir=.bku/commits/$(echo "$filepath" | sha256sum | cut -d ' ' -f 1)
+	# hash_dir=.bku/commits/$(echo "$filepath" | sha256sum | cut -d ' ' -f 1)
+	hash_dir=.bku/commits/$(hash_filename "$filepath")
 	mkdir $hash_dir
 	cp $filepath $hash_dir/original
 
@@ -84,24 +98,28 @@ commit() {
 		exit 1
 	fi
 
-	recreate $filepath
+	latest_hash_dir=$(recreate $filepath)
 	# latest file is now in ./tmp/latest
 
-	cat ./.tmp/latest
+	# cat ./.tmp/latest
 
 	if cmp -s "./.tmp/latest" "$filepath"; then
 		echo "Error: $filepath is the same as the latest commit."
 		exit 1
 	fi
 
-	current_hash_file=$(sha256sum $filepath | cut -d ' ' -f 1)
+	current_hash_file=$(hash_file "$filepath")
 	current_hash_dir=.bku/commits/$current_hash_file
 	mkdir $current_hash_dir
 
-	diff ./.tmp/latest $filepath > $current_hash_dir/next_diff
+	diff ./.tmp/latest $filepath > $latest_hash_dir/next_diff
 	echo "$message" > $current_hash_dir/commit_message
 
-	rm -r .tmp
+	echo "$(date +"%H:%M-%d/%m/%Y"): $message ($filepath)." > .tmp/tmp_history
+	cat .bku/commit_history >> .tmp/tmp_history
+	cp .tmp/tmp_history .bku/commit_history
+
+	rm -rf .tmp
 }
 
 recreate() {
@@ -110,12 +128,13 @@ recreate() {
 	# using hash value to recreate 
 	filepath=$1
 
-	current_hash_file=$(echo "$filepath" | sha256sum | cut -d ' ' -f 1)
+	current_hash_file=$(hash_filename "$filepath")
 	current_hash_dir=.bku/commits/$current_hash_file
 
 	# create a .tmp directory and work in it for security
 
 	mkdir -p .tmp
+	rm -rf ./.tmp/*
 
 	current_file=$current_hash_dir/original
 	cp $current_file .tmp/current_file
@@ -125,11 +144,13 @@ recreate() {
 	while [[ -f $current_hash_dir/next_diff ]] ; do
 		patch $current_file $current_hash_dir/next_diff
 
-		current_hash_file=$(sha256sum $current_file | cut -d ' ' -f 1)
+		current_hash_file=$(hash_file "$current_file")
 		current_hash_dir=.bku/commits/$current_hash_file
 	done
 
 	mv $current_file .tmp/latest
+
+	echo "$current_hash_dir"
 
 	# now the latest is $current_file (# .tmp/latest)
 }
@@ -162,4 +183,8 @@ if [ "$1" == "commit" ]; then
 
 	commit $message $filename
 	exit 0
+fi
+
+if [ "$1" == "history" ]; then
+	cat .bku/commit_history
 fi
