@@ -203,6 +203,11 @@ restore_file() {
 }
 
 restore_latest_commit() {
+	if [ -z "$( ls -A '.bku/commit_id' )" ]; then
+		echo "Error: No file to be restored."
+		exit 0
+	fi
+
 	list_file=$(get_latest_created_file ".bku/commit_id")
 
 	while IFS= read -r line; do
