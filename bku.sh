@@ -4,7 +4,7 @@
 #
 #
 #
-# - ./bku
+# - .bku
 #   - commit_history
 #   - tracked_files
 #   - commits/
@@ -35,7 +35,20 @@ hash_filename() {
 
 get_latest_directory() {
 	dir_path=$1
-	echo $(ls -td "$dir_path"/*/ | head -n 1)
+	ls -d "$dir_path"/*/ 2>/dev/null | xargs -I{} stat --format '%W %n' {} | sort -n | tail -n 1 | cut -d ' ' -f 2
+}
+
+get_latest_created_file() {
+	dir_path=$1
+	ls -t "$dir_path" 2>/dev/null | head -n 1
+}
+
+remove_prefix() {
+	filepath=$1
+	if [[ "$filepath" == ./* ]]; then
+		filepath=${filepath:2}
+	fi
+	echo "$filepath"
 }
 
 ##################################################################################
@@ -87,11 +100,12 @@ add() {
 	hash_dir=.bku/commits/$(hash_filename "$filepath")
 	mkdir $hash_dir
 	cp $filepath $hash_dir/original
+	echo $(hash_filename $filepath) >> $hash_dir/commit_logs
 
 	echo "Added $filepath to backup tracking."
 }
 
-commit() {
+commit_file() {
 	message=$1
 	filepath=$2
 	id=$3
@@ -106,12 +120,15 @@ commit() {
 		exit 1
 	fi
 
-	latest_hash_dir=$(recreate $filepath)
-	# latest file is now in ./tmp/latest
+	latest_hash_dir=.bku/commits/$(tail -n 1 .bku/commits/$(hash_filename $filepath)/commit_logs)
+	tmp_directory=$(recreate $filepath)
 
-	# cat ./.tmp/latest
+	if [[ ! -f "$tmp_directory/required_file" ]]; then
+		echo "WHATTTT"
+		exit 1
+	fi
 
-	if cmp -s "./.tmp/latest" "$filepath"; then
+	if cmp -s "$tmp_directory/required_file" "$filepath"; then
 		echo "Error: $filepath is the same as the latest commit."
 		exit 1
 	fi
@@ -120,18 +137,20 @@ commit() {
 	current_hash_dir=.bku/commits/$current_hash_file
 	mkdir $current_hash_dir
 
-	diff ./.tmp/latest $filepath > $latest_hash_dir/next_diff > /dev/null 2>&1
-	diff $filepath ./.tmp/latest > $current_hash_dir/prev_diff > /dev/null 2>&1
+	# touch $latest_hash_dir/next_diff
+	# touch $latest_hash_dir/next_hash
+	diff "$tmp_directory/required_file" "$filepath" > $latest_hash_dir/next_diff
+	diff "$filepath" "$tmp_directory/required_file" > $current_hash_dir/prev_diff
 	printf "$current_hash_file" > $latest_hash_dir/next_hash
 	echo "$message" > $current_hash_dir/commit_message
+
+	echo "$current_hash_file" >> .bku/commits/$(hash_filename $filepath)/commit_logs
 
 	# echo "$(date +"%H:%M-%d/%m/%Y"): $message ($filepath)." > .tmp/tmp_history
 	# cat .bku/commit_history >> .tmp/tmp_history
 	# cp .tmp/tmp_history .bku/commit_history
 
 	echo "$filepath" >> ".bku/commit_id/$id"
-
-	rm -rf .tmp
 }
 
 recreate() {
@@ -143,45 +162,54 @@ recreate() {
 	current_hash_file=$(hash_filename "$filepath")
 	current_hash_dir=.bku/commits/$current_hash_file
 
-	# create a .tmp directory and work in it for security
-
-	rm -rf ./.tmp/*
-	mkdir -p .tmp
+	# create a temp directory and work in it for security
+	tmp_directory=$(mktemp -d)
+	if [[ $tmp_directory == "" ]]; then
+		exit 1
+	fi
 
 	current_file=$current_hash_dir/original
-	cp $current_file .tmp/current_file
-	current_file=.tmp/current_file
-
+	cp $current_file $tmp_directory/current_file
+	current_file=$tmp_directory/current_file
 
 	while [[ -f $current_hash_dir/next_hash ]] ; do
-		patch $current_file $current_hash_dir/next_diff > /dev/null 2>&1
+		patch -N $current_file $current_hash_dir/next_diff 1>/dev/null 2>/dev/null
 
 		current_hash_file=$(cat "$current_hash_dir/next_hash")
 		current_hash_dir=.bku/commits/$current_hash_file
 	done
 
-	mv $current_file .tmp/latest
+	mv $current_file $tmp_directory/required_file
 
-	printf "$current_hash_dir" # return hash dir
+	printf "$tmp_directory" # return hash dir
 	# now the latest is $current_file (# .tmp/latest)
 }
 
-restore() {
+restore_file() {
 	filepath=$1
 
-	rm -rf .tmp
-	current_hash_dir=$(recreate $filepath)
+	tmp_directory=$(recreate $filepath)
+	current_hash_dir=.bku/commits/$(tail -n 1 .bku/commits/$(hash_filename $filepath)/commit_logs)
 
 	if [[ ! -e "$current_hash_dir/prev_diff" ]]; then
 		echo "Error: No previous version available for $filepath"
 		exit 1
 	fi
 
-	patch ".tmp/latest" "$current_hash_dir/prev_diff" > /dev/null 2>&1
+	patch -N "$tmp_directory/required_file" "$current_hash_dir/prev_diff" 2> /dev/null
+	mv $tmp_directory/required_file "./$filepath"
 
-	cp .tmp/latest $filepath
+	echo "Restored $filepath to its previous version."
+}
 
-	printf "Restored $filepath to its previous version."
+restore_latest_commit() {
+	list_file=$(get_latest_created_file ".bku/commit_id")
+
+	while IFS= read -r line; do
+		echo "Commiting file $line"
+		restore_file $line
+		# Add your logic here
+	done < ".bku/commit_id/$list_file"
 }
 
 ########################### Main ################################
@@ -192,12 +220,14 @@ if [ ! -d ".bku" ]; then
 fi
 
 if [ "$1" == "add" ]; then
-  filename=$2
+  filepath=$2
+	filepath=$(remove_prefix $filepath)
+
   if [ "$2" == "" ]; then
     echo "Add all files."
 		exit 0
   fi
-	add $filename
+	add $filepath
 	exit 0
 fi
 
@@ -214,23 +244,47 @@ if [ "$1" == "commit" ]; then
 	id=$(echo "$(date +%s)")
 
   if [ "$filename" == "" ]; then
-    echo "Commit all files."
+		list_of_files=""
+
+		dir_path="."
+		find "$dir_path" -type f | while IFS= read -r file; do
+			file=$(remove_prefix $file)
+			if [[ $file == .bku/* ]]; then
+				continue
+			fi
+
+			if [[ $file == bku.sh ]]; then
+				continue
+			fi
+
+			tmp_directory=$(recreate $file)
+			if ! cmp -s "$tmp_directory/required_file" $file; then
+				$(commit_file $message $file $id) == 0 && echo "Committed $file with ID $(date +"%H:%M-%d/%m/%Y")." && list_of_files="$list_of_file,$file"
+			fi  
+			# Add your logic here
+		done
+
+		if [[ $(cat .bku/commit_id/$id 2> /dev/null) == "" ]]; then
+			echo "No file committed"
+		fi
+
 		exit 0
   fi
 
-	commit $message $filename $id
+	commit_file $message $filename
 	exit 0
 fi
 
 if [ "$1" == "restore" ]; then
 	if [ "$2" == "" ]; then
-		echo "Restore latest commit."
+		# echo "Restore latest commit."
 		restore_latest_commit
 		exit 0
 	fi
 
 	filepath=$2
-	restore $filepath
+	filepath=$(remove_prefix $filepath)
+	restore_file $filepath
 fi
 
 if [ "$1" == "history" ]; then
