@@ -295,3 +295,20 @@ fi
 if [ "$1" == "history" ]; then
 	cat .bku/commit_history
 fi
+
+if [ "$1" == "schedule" ]; then
+	CRON_JOB=""
+	if [ "$2" == "--daily" ]; then
+		CRON_JOB=""
+	fi
+fi
+
+if [ "$1" == "stop" ]; then
+	if [ ! -d .bku/ ]; then
+		echo "Error: No backup system to be removed."
+		exit 1
+	fi
+
+	rm -rf .bku
+	echo "Backup system removed."
+fi
